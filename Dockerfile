@@ -8,5 +8,6 @@ RUN go get -u github.com/jteeuwen/go-bindata/...
 RUN make linux64
 RUN go build -o /go/bin/goad-api webapi/webapi.go
 
+RUN apt-get install s3cmd
 CMD ["/go/bin/goad-api", "-addr", ":8080"]
 EXPOSE 8080
