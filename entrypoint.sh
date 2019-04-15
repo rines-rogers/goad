@@ -6,7 +6,6 @@ TIMESTAMP="$(date +"%s")"
 : "${REGIONS:=us-east-1 us-west-1 ap-northeast-1 eu-west-1}"
 : "${REQUESTS:=100}"
 : "${CONCURRENCY:=1}"
-: "${PLATFORM:=desktop}"
 
 if [[ -z "$AWS_ACCESS_KEY_ID" ]]; then
   (>&2 echo "Must provide AWS_ACCESS_KEY_ID")
@@ -25,6 +24,16 @@ fi
 
 if [[ -z "$ZYPE_API_KEY" ]]; then
   (>&2 echo "Must provide ZYPE_API_KEY")
+  exit 1
+fi
+
+if [[ -z "$VIDEO_MODE" ]]; then
+  (>&2 echo "Must provide VIDEO_MODE")
+  exit 1
+fi
+
+if [[ -z "$PLATFORM" ]]; then
+  (>&2 echo "Must provide PLATFORM")
   exit 1
 fi
 
@@ -65,8 +74,29 @@ desktop)
   ;;
 esac
 
-# Download the master manifest, then look for the 1280x720 resolution and store that URL.
-curl -A "$USER_AGENT" "https://player.zype.com/manifest/$VIDEO_ID?api_key=$ZYPE_API_KEY" > /tmp/master_manifest.out
+case $VIDEO_MODE in
+vod)
+  # Download the master manifest directly
+  curl -A "$USER_AGENT" "https://player.zype.com/manifest/$VIDEO_ID?api_key=$ZYPE_API_KEY" > /tmp/master_manifest.out
+  ;;
+live)
+  # We currently need the JSON embed code, which is returned on any non-desktop platform.
+  if [ "$PLATFORM" == "desktop" ]; then
+    (>&2 echo "Live testing with desktop platform is currently unsupported.")
+    exit 1
+  fi
+
+  # Download the JSON embed code, then parse the master manifest URL and download it
+  MANIFEST_URL=`curl -A "$USER_AGENT" "https://player.zype.com/embed/$VIDEO_ID?api_key=$ZYPE_API_KEY" | jq -r '.response.body.outputs[0].url'`
+  curl -A "$USER_AGENT" "$MANIFEST_URL" > /tmp/master_manifest.out
+  ;;
+*)
+  (>&2 echo "Invalid video mode $VIDEO_MODE")
+  exit 1
+  ;;
+esac
+
+# Look for the x720 resolution and store that URL.
 found_url=0
 CHILD_MANIFEST_URL=""
 while read line
@@ -75,7 +105,7 @@ do
     CHILD_MANIFEST_URL=$line
     break
   fi
-  if [[ "$line" == *"RESOLUTION=1280x720"* ]]; then
+  if [[ "$line" == *"RESOLUTION="* && "$line" == *"x720"* ]]; then
     found_url=1
   fi
 done < <(cat /tmp/master_manifest.out)
@@ -97,7 +127,7 @@ done < <(cat /tmp/child_manifest.out)
 
 # Use that chunk URL for testing. Run it through every configured region and store the test results.
 for r in $REGIONS; do
-  $GOAD_BIN -H "User-Agent: $USER_AGENT" -H "Zype-Info: Goad Test ($r)" --region=$r --requests=$REQUESTS --concurrency=$CONCURRENCY --json-output=/tmp/goad-results/$VIDEO_ID.$r.$PLATFORM.$TIMESTAMP.json "$CHUNK_MANIFEST_URL";
+  $GOAD_BIN -H "User-Agent: $USER_AGENT" -H "Zype-Info: Goad Test ($r)" --region=$r --requests=$REQUESTS --concurrency=$CONCURRENCY --json-output=/tmp/goad-results/$VIDEO_ID.$r.$PLATFORM-$VIDEO_MODE.$TIMESTAMP.json "$CHUNK_MANIFEST_URL";
 done
 
 # Upload the test results to S3.
